@@ -7,11 +7,13 @@
 #include <signal.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #define VERSION 24
 #define BUFSIZE 8096
-#define DEFAULT_PORT  8081
+#define DEFAULT_PORT  "8081"
+#define WARN       41
 #define ERROR      42
 #define LOG        44
 #define FORBIDDEN 403
@@ -44,7 +46,9 @@ static void logger(int type, char *s1, char *s2, int socket_fd)
   char logbuffer[BUFSIZE*2];
 
   switch (type) {
-  case ERROR: (void)sprintf(logbuffer,"ERROR: %s:%s Errno=%d exiting pid=%d",s1, s2, errno,getpid());
+  case WARN: (void)sprintf(logbuffer,"WARNING: %s:%s Errno=%d exiting pid=%d",s1, s2, errno, getpid());
+    break;
+  case ERROR: (void)sprintf(logbuffer,"ERROR: %s:%s Errno=%d exiting pid=%d",s1, s2, errno, getpid());
     break;
   case FORBIDDEN:
     (void)write(socket_fd, "HTTP/1.1 403 Forbidden\nContent-Length: 185\nConnection: close\nContent-Type: text/html\n\n<html><head>\n<title>403 Forbidden</title>\n</head><body>\n<h1>Forbidden</h1>\nThe requested URL, file type or operation is not allowed on this simple static file webserver.\n</body></html>\n",271);
@@ -63,6 +67,52 @@ static void logger(int type, char *s1, char *s2, int socket_fd)
     (void)close(fd);
   }
   if(type == ERROR || type == NOTFOUND || type == FORBIDDEN) exit(3);
+}
+
+/*
+ * http://beej.us/guide/bgnet/output/html/multipage/getaddrinfoman.html
+   code for a server waiting for connections
+   namely a stream socket on port "port", on this host's IP
+   either IPv4 or IPv6.
+*/ 
+static int start_server(char *port) {
+  int listenfd, rv;
+  struct addrinfo hints, *servinfo, *p;
+
+  memset(&hints, 0, sizeof hints);
+  hints.ai_family = AF_UNSPEC; // use AF_INET6 to force IPv6
+  hints.ai_socktype = SOCK_STREAM;
+  hints.ai_flags = AI_PASSIVE; // use my IP address
+
+  if ((rv = getaddrinfo(NULL, port, &hints, &servinfo)) != 0) {
+    logger(ERROR, "getaddrinfo", (char *)gai_strerror(rv), 0);
+  }
+
+  // loop through all the results and bind to the first we can
+  for(p = servinfo; p != NULL; p = p->ai_next) {
+    if ((listenfd = socket(p->ai_family, p->ai_socktype,
+            p->ai_protocol)) == -1) {
+        logger(WARN, "socket", strerror(errno), 0);
+        continue;
+    }
+
+    if (bind(listenfd, p->ai_addr, p->ai_addrlen) == -1) {
+        close(listenfd);
+        logger(WARN, "bind", strerror(errno), 0);
+        continue;
+    }
+
+    break; // if we get here, we must have connected successfully
+  }
+
+  if (p == NULL) {
+    // looped off the end of the list with no successful bind
+    logger(ERROR, "failed to bind socket", strerror(errno), 0);
+  }
+
+  freeaddrinfo(servinfo); // all done with this structure
+
+  return listenfd;
 }
 
 /* this is a child web server process, so we can exit on errors */
@@ -136,7 +186,7 @@ static void usage(void) {
   "\tnweb is a small and very safe mini web server\n"
   "\tThere is no fancy features = safe and secure.\n\n"
   "\t-h\t\tdisplay this message\n"
-  "\t-p number\tweb port number (default: %d)\n"
+  "\t-p number\tweb port number (default: %s)\n"
   "\t-r directory\troot_directory (default: %s)\n"
   "\t-d\t\trun in background\n"
   , VERSION, DEFAULT_PORT, getenv("PWD"));
@@ -151,7 +201,8 @@ static void usage(void) {
 
 int main(int argc, char **argv)
 {
-  int i, port, pid, listenfd, socketfd, hit;
+  int i, pid, listenfd, socketfd, hit;
+  char *port;
   socklen_t length;
   static struct sockaddr_in cli_addr; /* static = initialised to zeros */
   static struct sockaddr_in serv_addr; /* static = initialised to zeros */
@@ -176,8 +227,9 @@ int main(int argc, char **argv)
         }
         break;
       case 'p':
-        port = atoi(optarg);
-        if(port < 0 || port > 60000) {
+        port = optarg;
+        i = atoi(port);
+        if(i < 0 || i > 60000) {
           logger(ERROR,"Invalid port number (try 1->60000)",optarg,0);
         }
         break;
@@ -203,13 +255,10 @@ int main(int argc, char **argv)
   logger(LOG,"nweb starting",argv[1],getpid());
 
   /* setup the network socket */
-  if((listenfd = socket(AF_INET, SOCK_STREAM,0)) <0)
-    logger(ERROR, "system call","socket",0);
-  serv_addr.sin_family = AF_INET;
-  serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-  serv_addr.sin_port = htons(port);
-  if(bind(listenfd, (struct sockaddr *)&serv_addr,sizeof(serv_addr)) <0)
-    logger(ERROR,"system call","bind",0);
+  listenfd = start_server(port);
+  if (listenfd < 0)
+    return -1;
+
   if( listen(listenfd,64) <0)
     logger(ERROR,"system call","listen",0);
   for(hit=1; ;hit++) {
