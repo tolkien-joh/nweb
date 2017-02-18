@@ -1,3 +1,12 @@
+nweb README for version 24
+
+1) use getopt() for arguement parsing.
+   if no arguement, use default parameter
+
+2) support 'application/octet-stream'
+
+-----------------
+
 nweb README for version 23
 
 1) Bug fixed - was duplicating errors in the nweb.log file 

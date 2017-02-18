@@ -8,8 +8,8 @@
 #include <arpa/inet.h>
 
 /* YOU WILL HAVE TO CHANGE THESE TWO LINES  TO MATCH YOUR CONFIG */
-#define PORT        8181		/* Port number as an integer - web server default is 80 */
-#define IP_ADDRESS "192.168.0.8"	/* IP Address as a string */
+#define PORT        8081		/* Port number as an integer - web server default is 80 */
+#define IP_ADDRESS "127.0.0.1"	/* IP Address as a string */
 
 char *command = "GET /index.html HTTP/1.0 \r\n\r\n" ;
 /* Note: spaces are delimiters and VERY important */

@@ -9,8 +9,9 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#define VERSION 23
+#define VERSION 24
 #define BUFSIZE 8096
+#define DEFAULT_PORT  8081
 #define ERROR      42
 #define LOG        44
 #define FORBIDDEN 403
@@ -20,7 +21,7 @@
 #   define SIGCLD SIGCHLD
 #endif
 
-struct {
+static struct {
   char *ext;
   char *filetype;
 } extensions [] = {
@@ -35,8 +36,9 @@ struct {
   {"htm", "text/html" },
   {"html","text/html" },
   {0,0} };
+static char *bin_type = "application/octet-stream";
 
-void logger(int type, char *s1, char *s2, int socket_fd)
+static void logger(int type, char *s1, char *s2, int socket_fd)
 {
   int fd ;
   char logbuffer[BUFSIZE*2];
@@ -64,7 +66,7 @@ void logger(int type, char *s1, char *s2, int socket_fd)
 }
 
 /* this is a child web server process, so we can exit on errors */
-void web(int fd, int hit)
+static void web(int fd, int hit)
 {
   int j, file_fd, buflen;
   long i, ret, len;
@@ -108,7 +110,7 @@ void web(int fd, int hit)
       break;
     }
   }
-  if(fstr == 0) logger(FORBIDDEN,"file extension type not supported",buffer,fd);
+  if(fstr == 0) fstr = bin_type;
 
   if(( file_fd = open(&buffer[5],O_RDONLY)) == -1) {  /* open the file for reading */
     logger(NOTFOUND, "failed to open file",&buffer[5],fd);
@@ -129,55 +131,80 @@ void web(int fd, int hit)
   exit(1);
 }
 
+static void usage(void) {
+  (void)printf("usage: nweb [option]\t\t\t\tversion %d\n\n"
+  "\tnweb is a small and very safe mini web server\n"
+  "\tThere is no fancy features = safe and secure.\n\n"
+  "\t-h\t\tdisplay this message\n"
+  "\t-p number\tweb port number (default: %d)\n"
+  "\t-r directory\troot_directory (default: %s)\n"
+  "\t-d\t\trun in background\n"
+  , VERSION, DEFAULT_PORT, getenv("PWD"));
+
+  (void)printf("\n\tNot Supported: URLs including \"..\", Java, Javascript, CGI\n"
+  "\tNot Supported: directories / /etc /bin /lib /tmp /usr /dev /sbin \n"
+  "\tNo warranty given or implied\n"
+  "\t\t\t\t\tYong-iL Joh jsjjsmith888@gmail.com\n"  );
+
+  exit(0);
+}
+
 int main(int argc, char **argv)
 {
   int i, port, pid, listenfd, socketfd, hit;
   socklen_t length;
   static struct sockaddr_in cli_addr; /* static = initialised to zeros */
   static struct sockaddr_in serv_addr; /* static = initialised to zeros */
+  char c;
+  int _daemonize = 0;
 
-  if( argc < 3  || argc > 3 || !strcmp(argv[1], "-?") ) {
-    (void)printf("hint: nweb Port-Number Top-Directory\t\tversion %d\n\n"
-  "\tnweb is a small and very safe mini web server\n"
-  "\tnweb only servers out file/web pages with extensions named below\n"
-  "\t and only from the named directory or its sub-directories.\n"
-  "\tThere is no fancy features = safe and secure.\n\n"
-  "\tExample: nweb 8181 /home/nwebdir &\n\n"
-  "\tOnly Supports:", VERSION);
-    for(i=0;extensions[i].ext != 0;i++)
-      (void)printf(" %s",extensions[i].ext);
+  port = DEFAULT_PORT;
+  //Parsing the command line arguments
+  while ((c = getopt (argc, argv, "hp:r:d")) != -1) {
+    switch (c) {
+      case 'r':
+        if( !strncmp(optarg,"/"   ,2 ) || !strncmp(optarg,"/etc", 5 ) ||
+            !strncmp(optarg,"/bin",5 ) || !strncmp(optarg,"/lib", 5 ) ||
+            !strncmp(optarg,"/tmp",5 ) || !strncmp(optarg,"/usr", 5 ) ||
+            !strncmp(optarg,"/dev",5 ) || !strncmp(optarg,"/sbin",6) ){
+          (void)printf("ERROR: Bad top directory %s, see nweb -h\n",optarg);
+          exit(3);
+        }
+        if(chdir(optarg) == -1) {
+          (void)printf("ERROR: Can't Change to directory %s\n",optarg);
+          exit(4);
+        }
+        break;
+      case 'p':
+        port = atoi(optarg);
+        if(port < 0 || port > 60000) {
+          logger(ERROR,"Invalid port number (try 1->60000)",optarg,0);
+        }
+        break;
+      case 'd':
+        _daemonize = 1;
+        break;
+      case 'h':
+      default:
+        usage();
+    }
+  }
 
-    (void)printf("\n\tNot Supported: URLs including \"..\", Java, Javascript, CGI\n"
-  "\tNot Supported: directories / /etc /bin /lib /tmp /usr /dev /sbin \n"
-  "\tNo warranty given or implied\n\tNigel Griffiths nag@uk.ibm.com\n"  );
-    exit(0);
-  }
-  if( !strncmp(argv[2],"/"   ,2 ) || !strncmp(argv[2],"/etc", 5 ) ||
-      !strncmp(argv[2],"/bin",5 ) || !strncmp(argv[2],"/lib", 5 ) ||
-      !strncmp(argv[2],"/tmp",5 ) || !strncmp(argv[2],"/usr", 5 ) ||
-      !strncmp(argv[2],"/dev",5 ) || !strncmp(argv[2],"/sbin",6) ){
-    (void)printf("ERROR: Bad top directory %s, see nweb -?\n",argv[2]);
-    exit(3);
-  }
-  if(chdir(argv[2]) == -1){
-    (void)printf("ERROR: Can't Change to directory %s\n",argv[2]);
-    exit(4);
-  }
   /* Become deamon + unstopable and no zombies children (= no wait()) */
-  if(fork() != 0)
-    return 0; /* parent returns OK to shell */
-  (void)signal(SIGCLD, SIG_IGN); /* ignore child death */
-  (void)signal(SIGHUP, SIG_IGN); /* ignore terminal hangups */
-  for(i=0;i<32;i++)
-    (void)close(i);    /* close open files */
-  (void)setpgrp();    /* break away from process group */
+  if (_daemonize) {
+    if(fork() != 0)
+      return 0; /* parent returns OK to shell */
+    (void)signal(SIGCLD, SIG_IGN); /* ignore child death */
+    (void)signal(SIGHUP, SIG_IGN); /* ignore terminal hangups */
+   for(i=0;i<32;i++)
+      (void)close(i);    /* close open files */
+    (void)setpgrp();    /* break away from process group */
+  }
   logger(LOG,"nweb starting",argv[1],getpid());
+
   /* setup the network socket */
   if((listenfd = socket(AF_INET, SOCK_STREAM,0)) <0)
     logger(ERROR, "system call","socket",0);
-  port = atoi(argv[1]);
-  if(port < 0 || port >60000)
-    logger(ERROR,"Invalid port number (try 1->60000)",argv[1],0);
   serv_addr.sin_family = AF_INET;
   serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
   serv_addr.sin_port = htons(port);
@@ -191,8 +218,7 @@ int main(int argc, char **argv)
       logger(ERROR,"system call","accept",0);
     if((pid = fork()) < 0) {
       logger(ERROR,"system call","fork",0);
-    }
-    else {
+    } else {
       if(pid == 0) {   /* child */
         (void)close(listenfd);
         web(socketfd,hit); /* never returns */
